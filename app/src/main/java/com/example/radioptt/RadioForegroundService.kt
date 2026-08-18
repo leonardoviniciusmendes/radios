@@ -173,28 +173,35 @@ class RadioForegroundService : Service() {
                 val socket = DatagramSocket()
                 socket.broadcast = true
                 discoverySocket = socket
-                val address = InetAddress.getByName("255.255.255.255")
+                val target = InetAddress.getByName("192.168.0.70")
 
                 while (running.get()) {
-                    val config = getDeviceConfig()
-                    val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-                    val wifiInfo = wifiManager?.connectionInfo
-                    val ip = getWifiIpAddress(wifiInfo?.ipAddress ?: 0)
-                    val payload = JSONObject()
-                        .put("deviceId", getRadioDeviceId())
-                        .put("name", config.name)
-                        .put("model", Build.MODEL)
-                        .put("ip", ip)
-                        .put("httpPort", httpPort)
-                        .put("nome", config.name)
-                        .put("modelo", Build.MODEL)
-                        .put("portaAudio", audioPort)
-                        .toString()
-                        .toByteArray(Charsets.UTF_8)
-                    socket.send(DatagramPacket(payload, payload.size, address, discoveryPort))
+                    try {
+                        val config = getDeviceConfig()
+                        val deviceId = getRadioDeviceId()
+                        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                        val wifiInfo = wifiManager?.connectionInfo
+                        val ip = getWifiIpAddress(wifiInfo?.ipAddress ?: 0)
+                        val payload = JSONObject()
+                            .put("deviceId", deviceId)
+                            .put("name", config.name)
+                            .put("model", Build.MODEL)
+                            .put("ip", ip)
+                            .put("httpPort", httpPort)
+                            .put("nome", config.name)
+                            .put("modelo", Build.MODEL)
+                            .put("portaAudio", audioPort)
+                            .toString()
+                            .toByteArray(Charsets.UTF_8)
+                        socket.send(DatagramPacket(payload, payload.size, target, discoveryPort))
+                        Log.i(TAG, "DISCOVERY_TX deviceId=$deviceId ip=$ip target=${target.hostAddress}:$discoveryPort")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "DISCOVERY_ERROR ${e.message ?: e.javaClass.simpleName}")
+                    }
                     Thread.sleep(2_000)
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.e(TAG, "DISCOVERY_ERROR ${e.message ?: e.javaClass.simpleName}")
             } finally {
                 discoverySocket?.close()
                 discoverySocket = null
