@@ -12,6 +12,14 @@ class BootReceiver : BroadcastReceiver() {
 
         Log.i(TAG, "BOOT_RECEIVED")
         RadioServiceStarter.startFromBoot(context)
+
+        val activityIntent = Intent(context, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        }
+        Log.i(TAG, "MAIN_ACTIVITY_START_REQUESTED")
+        context.startActivity(activityIntent)
     }
 
     companion object {
