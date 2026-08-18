@@ -1,10 +1,11 @@
-@"
 .gradle/
 .idea/
 .kotlin/
 build/
 app/build/
 local.properties
+keystore/
+*.jks
+*.keystore
 *.iml
 Generic.kl.backup
-"@ | Set-Content .gitignore

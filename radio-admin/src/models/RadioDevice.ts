@@ -5,6 +5,7 @@ export interface RadioDeviceApiResponse {
   name: string;
   model: string;
   ip: string;
+  httpPort?: number;
   mac: string;
   online: boolean;
   channel: string;
@@ -27,6 +28,7 @@ export interface RadioDevice {
   deviceId: string;
   model: string;
   ip: string;
+  httpPort?: number;
   mac: string;
   status: RadioStatus;
   channel: string;

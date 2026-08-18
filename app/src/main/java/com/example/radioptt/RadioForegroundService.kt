@@ -174,16 +174,20 @@ class RadioForegroundService : Service() {
                 socket.broadcast = true
                 discoverySocket = socket
                 val address = InetAddress.getByName("255.255.255.255")
-                val deviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
-                    ?: "radio-${Build.MODEL}"
-                val name = "Radio ${Build.MODEL}"
-                val model = Build.MODEL
 
                 while (running.get()) {
+                    val config = getDeviceConfig()
+                    val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                    val wifiInfo = wifiManager?.connectionInfo
+                    val ip = getWifiIpAddress(wifiInfo?.ipAddress ?: 0)
                     val payload = JSONObject()
-                        .put("deviceId", deviceId)
-                        .put("nome", name)
-                        .put("modelo", model)
+                        .put("deviceId", getRadioDeviceId())
+                        .put("name", config.name)
+                        .put("model", Build.MODEL)
+                        .put("ip", ip)
+                        .put("httpPort", httpPort)
+                        .put("nome", config.name)
+                        .put("modelo", Build.MODEL)
                         .put("portaAudio", audioPort)
                         .toString()
                         .toByteArray(Charsets.UTF_8)

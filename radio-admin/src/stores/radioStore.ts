@@ -27,27 +27,47 @@ export const useRadioStore = defineStore('radio', () => {
   }
 
   function mergeRadios(nextRadios: RadioDevice[]) {
-    radios.value = nextRadios.map((nextRadio) => {
-      const currentRadio = radios.value.find((radio) => radio.id === nextRadio.id);
-      if (!currentRadio || nextRadio.status === 'ONLINE') {
+    const nextByDeviceId = new Map(nextRadios.map((radio) => [radio.deviceId, radio]));
+    const mergedRadios = radios.value.map((currentRadio) => {
+      const nextRadio = nextByDeviceId.get(currentRadio.deviceId);
+      if (!nextRadio) {
+        return {
+          ...currentRadio,
+          status: 'OFFLINE' as const,
+          lastCommunication: 'Sem resposta',
+        };
+      }
+
+      nextByDeviceId.delete(currentRadio.deviceId);
+      if (nextRadio.status === 'ONLINE') {
         return nextRadio;
       }
 
       return {
         ...currentRadio,
-        status: 'OFFLINE',
+        name: nextRadio.name || currentRadio.name,
+        model: nextRadio.model || currentRadio.model,
+        ip: nextRadio.ip,
+        httpPort: nextRadio.httpPort,
+        status: 'OFFLINE' as const,
         lastCommunication: 'Sem resposta',
       };
     });
 
-    if (!selectedRadioId.value || !radios.value.some((radio) => radio.id === selectedRadioId.value)) {
+    radios.value = [...mergedRadios, ...nextByDeviceId.values()];
+
+    if (!selectedRadioId.value || !radios.value.some((radio) => radio.deviceId === selectedRadioId.value)) {
       selectedRadioId.value = radios.value[0]?.id ?? null;
     }
   }
 
   async function refreshRadios() {
-    const radioData = await radioApi.getRadios();
-    mergeRadios(radioData);
+    try {
+      const radioData = await radioApi.getRadios();
+      mergeRadios(radioData);
+    } catch {
+      mergeRadios([]);
+    }
   }
 
   function startPolling() {
@@ -61,7 +81,10 @@ export const useRadioStore = defineStore('radio', () => {
   }
 
   async function loadDevices() {
-    const [radioData, channelData] = await Promise.all([radioApi.getRadios(), radioApi.getChannels()]);
+    const [radioData, channelData] = await Promise.all([
+      radioApi.getRadios().catch(() => []),
+      radioApi.getChannels(),
+    ]);
     mergeRadios(radioData);
     channels.value = channelData;
     startPolling();
@@ -79,7 +102,12 @@ export const useRadioStore = defineStore('radio', () => {
   }
 
   async function saveRadioConfig(id: string, payload: RadioDeviceConfigPayload) {
-    const updatedRadio = await radioApi.updateRadioConfig(id, payload);
+    const radio = radios.value.find((item) => item.id === id);
+    if (!radio) {
+      throw new Error('radio_not_found');
+    }
+
+    const updatedRadio = await radioApi.updateRadioConfig(radio, payload);
     const index = radios.value.findIndex((radio) => radio.id === id);
     if (index >= 0) {
       radios.value[index] = updatedRadio;

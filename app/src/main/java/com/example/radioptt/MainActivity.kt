@@ -8,14 +8,11 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.media.AudioFormat
-import android.media.AudioRecord
 import android.media.AudioManager
 import android.media.AudioTrack
-import android.media.MediaRecorder
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.util.Log
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ViewGroup
@@ -33,12 +30,10 @@ import kotlin.concurrent.thread
 import org.json.JSONObject
 
 class MainActivity : Activity() {
-    private val logTag = "RadioPtt"
     private val port = 50005
     private val discoveryPort = 50006
     private val sampleRate = 16_000
     private val onlineTimeoutMs = 6_000L
-    private val sending = AtomicBoolean(false)
     private val receiving = AtomicBoolean(true)
     private val discovering = AtomicBoolean(true)
 
@@ -49,14 +44,10 @@ class MainActivity : Activity() {
     private lateinit var localModel: String
     private val discoveredRadios = LinkedHashMap<String, RadioDevice>()
     private var selectedDeviceId: String? = null
-    private var txSocket: DatagramSocket? = null
     private var rxSocket: DatagramSocket? = null
     private var discoveryRxSocket: DatagramSocket? = null
     private var discoveryTxSocket: DatagramSocket? = null
-    private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
-    @Volatile
-    private var isTransmitting = false
     private var pttBroadcastReceiverRegistered = false
     private val pttBroadcastReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -133,6 +124,7 @@ class MainActivity : Activity() {
 
         startReceiver()
         startDiscovery()
+        configurePttController()
         registerPttBroadcastReceiver()
     }
 
@@ -161,91 +153,44 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun configurePttController() {
+        PttController.configure(
+            context = this,
+            targetIpProvider = {
+                selectedDeviceId?.let { discoveredRadios[it]?.ip }
+            },
+            callbacks = PttController.Callbacks(
+                onPttDown = {
+                    runOnUiThread {
+                        talkButton.text = "TRANSMITINDO..."
+                    }
+                },
+                onPttUp = {
+                    runOnUiThread {
+                        talkButton.text = "SEGURE PARA FALAR"
+                    }
+                },
+                onTxStop = {
+                    runOnUiThread {
+                        talkButton.text = "SEGURE PARA FALAR"
+                    }
+                },
+                onError = { message ->
+                    runOnUiThread {
+                        talkButton.text = "SEGURE PARA FALAR"
+                        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+                    }
+                }
+            )
+        )
+    }
+
     private fun startTransmission() {
-        if (isTransmitting) return
-        isTransmitting = true
-        Log.d(logTag, "PTT_DOWN")
-        talkButton.text = "TRANSMITINDO..."
-        startTalk()
+        PttController.startTransmission()
     }
 
     private fun stopTransmission() {
-        if (!isTransmitting) return
-        isTransmitting = false
-        Log.d(logTag, "PTT_UP")
-        talkButton.text = "SEGURE PARA FALAR"
-        stopTalk()
-    }
-
-    private fun startTalk() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
-            checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
-        ) {
-            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1)
-            return
-        }
-
-        val targetIp = selectedDeviceId?.let { discoveredRadios[it]?.ip } ?: ""
-        if (targetIp.isEmpty() || !sending.compareAndSet(false, true)) {
-            isTransmitting = false
-            talkButton.text = "SEGURE PARA FALAR"
-            return
-        }
-
-        Log.d(logTag, "TX_START")
-
-        thread(name = "udp-audio-tx") {
-            try {
-                val address = InetAddress.getByName(targetIp)
-                val socket = DatagramSocket()
-                txSocket = socket
-
-                val minBuffer = AudioRecord.getMinBufferSize(
-                    sampleRate,
-                    AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT
-                )
-                val bufferSize = maxOf(minBuffer, 960)
-                val recorder = AudioRecord(
-                    MediaRecorder.AudioSource.MIC,
-                    sampleRate,
-                    AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT,
-                    bufferSize * 2
-                )
-                audioRecord = recorder
-
-                val buffer = ByteArray(960)
-                recorder.startRecording()
-                while (sending.get()) {
-                    val read = recorder.read(buffer, 0, buffer.size)
-                    if (read > 0) {
-                        socket.send(DatagramPacket(buffer, read, address, port))
-                    }
-                }
-            } catch (e: Exception) {
-                runOnUiThread { Toast.makeText(this, e.message ?: "Erro ao enviar audio", Toast.LENGTH_SHORT).show() }
-            } finally {
-                audioRecord?.runCatching { stop() }
-                audioRecord?.release()
-                audioRecord = null
-                txSocket?.close()
-                txSocket = null
-                sending.set(false)
-                runOnUiThread {
-                    isTransmitting = false
-                    talkButton.text = "SEGURE PARA FALAR"
-                }
-            }
-        }
-    }
-
-    private fun stopTalk() {
-        if (sending.getAndSet(false)) {
-            Log.d(logTag, "TX_STOP")
-        }
-        audioRecord?.runCatching { stop() }
-        txSocket?.close()
+        PttController.stopTransmission()
     }
 
     private fun startReceiver() {
@@ -405,7 +350,8 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         discovering.set(false)
         receiving.set(false)
-        stopTalk()
+        PttController.stopTransmission()
+        PttController.clearConfiguration()
         rxSocket?.close()
         discoveryRxSocket?.close()
         discoveryTxSocket?.close()

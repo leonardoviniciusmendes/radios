@@ -1,15 +1,13 @@
 import axios from 'axios';
-import {
-  radioDeviceIps,
-  radioHttpPort,
-  radioRequestTimeoutMs,
-} from '../config/radioDevices';
+import { radioRequestTimeoutMs } from '../config/radioDevices';
 import type { Channel } from '../models/Channel';
 import type {
   RadioDevice,
   RadioDeviceApiResponse,
   RadioDeviceConfigPayload,
 } from '../models/RadioDevice';
+import type { RadioDiscovery } from './discoveryBridgeApi';
+import { discoveryBridgeApi } from './discoveryBridgeApi';
 
 const api = axios.create({
   timeout: radioRequestTimeoutMs,
@@ -22,23 +20,24 @@ const mockChannels: Channel[] = [
   { id: 'manutencao', name: 'Manutenção', description: 'Equipe técnica e apoio' },
 ];
 
-function getDeviceUrl(ip: string) {
-  return `http://${ip}:${radioHttpPort}/api/device`;
+function getDeviceUrl(ip: string, httpPort: number) {
+  return `http://${ip}:${httpPort}/api/device`;
 }
 
-function getDeviceConfigUrl(ip: string) {
-  return `http://${ip}:${radioHttpPort}/api/device/config`;
+function getDeviceConfigUrl(ip: string, httpPort: number) {
+  return `http://${ip}:${httpPort}/api/device/config`;
 }
 
-function mapOnlineDevice(ip: string, device: RadioDeviceApiResponse): RadioDevice {
+function mapOnlineDevice(discovery: RadioDiscovery, device: RadioDeviceApiResponse): RadioDevice {
   return {
-    id: ip,
-    name: device.name || `Radio ${ip}`,
-    deviceId: device.deviceId || ip,
+    id: device.deviceId || discovery.deviceId,
+    name: device.name || discovery.name || `Radio ${discovery.deviceId}`,
+    deviceId: device.deviceId || discovery.deviceId,
     model: device.model || 'unavailable',
-    ip: device.ip || ip,
+    ip: device.ip || discovery.ip,
+    httpPort: discovery.httpPort,
     mac: device.mac || 'unavailable',
-    status: device.online ? 'ONLINE' : 'OFFLINE',
+    status: device.online && discovery.online ? 'ONLINE' : 'OFFLINE',
     channel: device.channel || 'Geral',
     appVersion: device.appVersion || 'unavailable',
     wifi: device.wifi || 'unavailable',
@@ -53,13 +52,14 @@ function mapOnlineDevice(ip: string, device: RadioDeviceApiResponse): RadioDevic
   };
 }
 
-function mapOfflineDevice(ip: string): RadioDevice {
+function mapOfflineDevice(discovery: RadioDiscovery): RadioDevice {
   return {
-    id: ip,
-    name: `Radio ${ip}`,
-    deviceId: ip,
-    model: 'unavailable',
-    ip,
+    id: discovery.deviceId,
+    name: discovery.name || `Radio ${discovery.deviceId}`,
+    deviceId: discovery.deviceId,
+    model: discovery.model || 'unavailable',
+    ip: discovery.ip,
+    httpPort: discovery.httpPort,
     mac: 'unavailable',
     status: 'OFFLINE',
     channel: 'Geral',
@@ -72,30 +72,45 @@ function mapOfflineDevice(ip: string): RadioDevice {
   };
 }
 
-async function getRadioByIp(ip: string): Promise<RadioDevice> {
+async function getRadioByDiscovery(discovery: RadioDiscovery): Promise<RadioDevice> {
+  if (!discovery.online) {
+    return mapOfflineDevice(discovery);
+  }
+
   try {
-    const response = await api.get<RadioDeviceApiResponse>(getDeviceUrl(ip));
-    return mapOnlineDevice(ip, response.data);
+    const response = await api.get<RadioDeviceApiResponse>(getDeviceUrl(discovery.ip, discovery.httpPort));
+    console.log(`RADIO_DEVICE_LOADED deviceId=${response.data.deviceId || discovery.deviceId} ip=${response.data.ip || discovery.ip}`);
+    return mapOnlineDevice(discovery, response.data);
   } catch {
-    return mapOfflineDevice(ip);
+    return mapOfflineDevice(discovery);
   }
 }
 
 export const radioApi = {
   client: api,
-  configuredIps: radioDeviceIps,
 
   async getRadios(): Promise<RadioDevice[]> {
-    return Promise.all(radioDeviceIps.map((ip) => getRadioByIp(ip)));
+    const discoveredRadios = await discoveryBridgeApi.getRadios();
+    return Promise.all(discoveredRadios.map((radio) => getRadioByDiscovery(radio)));
   },
 
-  async updateRadioConfig(ip: string, payload: RadioDeviceConfigPayload): Promise<RadioDevice> {
-    await api.put(getDeviceConfigUrl(ip), payload, {
+  async updateRadioConfig(radio: RadioDevice, payload: RadioDeviceConfigPayload): Promise<RadioDevice> {
+    const httpPort = radio.httpPort ?? 50080;
+    await api.put(getDeviceConfigUrl(radio.ip, httpPort), payload, {
       headers: {
         'Content-Type': 'application/json',
       },
     });
-    return getRadioByIp(ip);
+    const discovery: RadioDiscovery = {
+      deviceId: radio.deviceId,
+      name: radio.name,
+      model: radio.model,
+      ip: radio.ip,
+      httpPort,
+      lastSeen: new Date().toISOString(),
+      online: true,
+    };
+    return getRadioByDiscovery(discovery);
   },
 
   async getChannels(): Promise<Channel[]> {
