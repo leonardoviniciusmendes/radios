@@ -140,50 +140,67 @@ class RadioForegroundService : Service() {
         if (!audioReceiverRunning.compareAndSet(false, true)) return
         Log.i(TAG, "AUDIO_RECEIVER_START")
         thread(name = "service-udp-audio-rx") {
-            Log.i(TAG, "AUDIO_RX_THREAD_START")
+            Log.i(TAG, "RX_WORKER_START")
+            var restartAttempt = 0
             try {
-                val minBuffer = AudioTrack.getMinBufferSize(
-                    sampleRate,
-                    AudioFormat.CHANNEL_OUT_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT
-                )
-                Log.i(TAG, "AUDIO_TRACK_MIN_BUFFER size=$minBuffer")
-                val player = AudioTrack(
-                    AudioManager.STREAM_MUSIC,
-                    sampleRate,
-                    AudioFormat.CHANNEL_OUT_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT,
-                    minBuffer * 4,
-                    AudioTrack.MODE_STREAM
-                )
-                audioTrack = player
-                Log.i(TAG, "AUDIO_TRACK_PLAY_REQUEST")
-                player.play()
-
-                val socket = DatagramSocket(audioPort)
-                audioSocket = socket
-                Log.i(TAG, "AUDIO_RX_SOCKET_OPEN port=$audioPort")
-                val buffer = ByteArray(2048)
-
                 while (running.get()) {
-                    val packet = DatagramPacket(buffer, buffer.size)
-                    socket.receive(packet)
-                    player.write(packet.data, packet.offset, packet.length)
+                    try {
+                        runAudioReceiverLoop()
+                        restartAttempt = 0
+                    } catch (e: Exception) {
+                        if (running.get()) {
+                            restartAttempt += 1
+                            Log.e(TAG, "RX_FATAL_ERROR ${e.message ?: e.javaClass.simpleName}")
+                            sleepBeforeRestart("RX", restartAttempt)
+                        }
+                    }
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "AUDIO_RX_THREAD_ERROR ${e.message ?: e.javaClass.simpleName}")
             } finally {
-                Log.i(TAG, "AUDIO_RX_SOCKET_CLOSE")
-                audioSocket?.close()
-                audioSocket = null
-                audioTrack?.runCatching { stop() }
-                    ?.onFailure { Log.e(TAG, "AUDIO_TRACK_STOP_ERROR ${it.message ?: it.javaClass.simpleName}") }
-                Log.i(TAG, "AUDIO_TRACK_RELEASE")
-                audioTrack?.release()
-                audioTrack = null
                 audioReceiverRunning.set(false)
-                Log.i(TAG, "AUDIO_RX_THREAD_STOP")
+                Log.i(TAG, "RX_WORKER_STOP")
             }
+        }
+    }
+
+    private fun runAudioReceiverLoop() {
+        try {
+            val minBuffer = AudioTrack.getMinBufferSize(
+                sampleRate,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            )
+            Log.i(TAG, "AUDIO_TRACK_MIN_BUFFER size=$minBuffer")
+            val player = AudioTrack(
+                AudioManager.STREAM_MUSIC,
+                sampleRate,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                minBuffer * 4,
+                AudioTrack.MODE_STREAM
+            )
+            audioTrack = player
+            Log.i(TAG, "AUDIO_TRACK_PLAY_REQUEST")
+            player.play()
+
+            val socket = DatagramSocket(audioPort)
+            audioSocket = socket
+            Log.i(TAG, "AUDIO_RX_SOCKET_OPEN port=$audioPort")
+            val buffer = ByteArray(2048)
+
+            while (running.get()) {
+                val packet = DatagramPacket(buffer, buffer.size)
+                socket.receive(packet)
+                player.write(packet.data, packet.offset, packet.length)
+            }
+        } finally {
+            Log.i(TAG, "AUDIO_RX_SOCKET_CLOSE")
+            audioSocket?.close()
+            audioSocket = null
+            audioTrack?.runCatching { stop() }
+                ?.onFailure { Log.e(TAG, "AUDIO_TRACK_STOP_ERROR ${it.message ?: it.javaClass.simpleName}") }
+            Log.i(TAG, "AUDIO_TRACK_RELEASE")
+            audioTrack?.release()
+            audioTrack = null
         }
     }
 
@@ -191,57 +208,75 @@ class RadioForegroundService : Service() {
         if (!discoveryRunning.compareAndSet(false, true)) return
         Log.i(TAG, "DISCOVERY_START")
         thread(name = "service-udp-discovery-tx") {
-            Log.i(TAG, "DISCOVERY_THREAD_START")
+            Log.i(TAG, "DISCOVERY_WORKER_START")
+            var restartAttempt = 0
             try {
-                val socket = DatagramSocket()
-                socket.broadcast = true
-                discoverySocket = socket
-                Log.i(TAG, "DISCOVERY_SOCKET_OPEN broadcast=${socket.broadcast}")
-                val radioTarget = InetAddress.getByName("192.168.0.255")
-                val bridgeTarget = InetAddress.getByName("192.168.0.70")
-
                 while (running.get()) {
-                    val config = getDeviceConfig()
-                    val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-                    val wifiInfo = wifiManager?.connectionInfo
-                    val ip = getWifiIpAddress(wifiInfo?.ipAddress ?: 0)
-                    val payload = JSONObject()
-                        .put("deviceId", getRadioDeviceId())
-                        .put("name", config.name)
-                        .put("model", Build.MODEL)
-                        .put("ip", ip)
-                        .put("httpPort", httpPort)
-                        .put("nome", config.name)
-                        .put("modelo", Build.MODEL)
-                        .put("portaAudio", audioPort)
-                        .toString()
-                        .toByteArray(Charsets.UTF_8)
-
                     try {
-                        socket.send(DatagramPacket(payload, payload.size, radioTarget, discoveryPort))
-                        Log.i(TAG, "DISCOVERY_TX_RADIO target=${radioTarget.hostAddress}:$discoveryPort")
+                        runDiscoveryLoop()
+                        restartAttempt = 0
                     } catch (e: Exception) {
-                        Log.e(TAG, "DISCOVERY_ERROR_RADIO ${e.message ?: e.javaClass.simpleName}")
+                        if (running.get()) {
+                            Log.e(TAG, "DISCOVERY_ERROR ${e.message ?: e.javaClass.simpleName}")
+                            restartAttempt += 1
+                            sleepBeforeRestart("DISCOVERY", restartAttempt)
+                        }
                     }
-
-                    try {
-                        socket.send(DatagramPacket(payload, payload.size, bridgeTarget, discoveryPort))
-                        Log.i(TAG, "DISCOVERY_TX_BRIDGE target=${bridgeTarget.hostAddress}:$discoveryPort")
-                    } catch (e: Exception) {
-                        Log.e(TAG, "DISCOVERY_ERROR_BRIDGE ${e.message ?: e.javaClass.simpleName}")
-                    }
-
-                    Thread.sleep(2_000)
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "DISCOVERY_ERROR ${e.message ?: e.javaClass.simpleName}")
             } finally {
-                Log.i(TAG, "DISCOVERY_SOCKET_CLOSE")
-                discoverySocket?.close()
-                discoverySocket = null
                 discoveryRunning.set(false)
-                Log.i(TAG, "DISCOVERY_THREAD_STOP")
+                Log.i(TAG, "DISCOVERY_WORKER_STOP")
             }
+        }
+    }
+
+    private fun runDiscoveryLoop() {
+        try {
+            val socket = DatagramSocket()
+            socket.broadcast = true
+            discoverySocket = socket
+            Log.i(TAG, "DISCOVERY_SOCKET_OPEN broadcast=${socket.broadcast}")
+            val radioTarget = InetAddress.getByName("192.168.0.255")
+            val bridgeTarget = InetAddress.getByName("192.168.0.70")
+
+            while (running.get()) {
+                val config = getDeviceConfig()
+                val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                val wifiInfo = wifiManager?.connectionInfo
+                val ip = getWifiIpAddress(wifiInfo?.ipAddress ?: 0)
+                val payload = JSONObject()
+                    .put("deviceId", getRadioDeviceId())
+                    .put("name", config.name)
+                    .put("model", Build.MODEL)
+                    .put("ip", ip)
+                    .put("httpPort", httpPort)
+                    .put("channel", config.channel)
+                    .put("nome", config.name)
+                    .put("modelo", Build.MODEL)
+                    .put("portaAudio", audioPort)
+                    .toString()
+                    .toByteArray(Charsets.UTF_8)
+
+                try {
+                    socket.send(DatagramPacket(payload, payload.size, radioTarget, discoveryPort))
+                    Log.i(TAG, "DISCOVERY_TX_RADIO target=${radioTarget.hostAddress}:$discoveryPort")
+                } catch (e: Exception) {
+                    Log.e(TAG, "DISCOVERY_ERROR_RADIO ${e.message ?: e.javaClass.simpleName}")
+                }
+
+                try {
+                    socket.send(DatagramPacket(payload, payload.size, bridgeTarget, discoveryPort))
+                    Log.i(TAG, "DISCOVERY_TX_BRIDGE target=${bridgeTarget.hostAddress}:$discoveryPort")
+                } catch (e: Exception) {
+                    Log.e(TAG, "DISCOVERY_ERROR_BRIDGE ${e.message ?: e.javaClass.simpleName}")
+                }
+
+                Thread.sleep(2_000)
+            }
+        } finally {
+            Log.i(TAG, "DISCOVERY_SOCKET_CLOSE")
+            discoverySocket?.close()
+            discoverySocket = null
         }
     }
 
@@ -251,34 +286,69 @@ class RadioForegroundService : Service() {
         startDiscoverySender()
     }
 
+    private fun sleepBeforeRestart(worker: String, attempt: Int) {
+        val delayMs = when (attempt) {
+            1 -> 1_000L
+            2 -> 2_000L
+            3 -> 5_000L
+            else -> 10_000L
+        }
+        Log.i(TAG, "${worker}_RESTART attempt=$attempt delay=$delayMs")
+        try {
+            Thread.sleep(delayMs)
+        } catch (e: InterruptedException) {
+            if (running.get()) {
+                Log.e(TAG, "${worker}_RESTART_SLEEP_ERROR ${e.message ?: e.javaClass.simpleName}")
+            }
+            Thread.currentThread().interrupt()
+        }
+    }
+
     private fun startHttpServer() {
         if (!httpServerRunning.compareAndSet(false, true)) return
         Log.i(TAG, "HTTP_SERVER_START port=$httpPort")
         thread(name = "service-http-admin") {
-            Log.i(TAG, "HTTP_THREAD_START")
+            Log.i(TAG, "HTTP_WORKER_START")
+            var restartAttempt = 0
             try {
-                val serverSocket = ServerSocket()
-                serverSocket.reuseAddress = true
-                serverSocket.bind(InetSocketAddress(httpPort))
-                httpServerSocket = serverSocket
-                Log.i(TAG, "HTTP_SERVER_SOCKET_OPEN port=$httpPort")
-
                 while (running.get()) {
-                    val client = serverSocket.accept()
-                    thread(name = "service-http-admin-client") {
-                        handleHttpClient(client)
+                    try {
+                        runHttpServerLoop()
+                        restartAttempt = 0
+                    } catch (e: Exception) {
+                        if (running.get()) {
+                            restartAttempt += 1
+                            Log.e(TAG, "HTTP_FATAL_ERROR ${e.message ?: e.javaClass.simpleName}")
+                            sleepBeforeRestart("HTTP", restartAttempt)
+                        }
                     }
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "HTTP_THREAD_ERROR ${e.message ?: e.javaClass.simpleName}")
             } finally {
-                Log.i(TAG, "HTTP_SERVER_SOCKET_CLOSE")
-                httpServerSocket?.close()
-                httpServerSocket = null
                 httpServerRunning.set(false)
                 Log.i(TAG, "HTTP_SERVER_STOP")
-                Log.i(TAG, "HTTP_THREAD_STOP")
+                Log.i(TAG, "HTTP_WORKER_STOP")
             }
+        }
+    }
+
+    private fun runHttpServerLoop() {
+        try {
+            val serverSocket = ServerSocket()
+            serverSocket.reuseAddress = true
+            serverSocket.bind(InetSocketAddress(httpPort))
+            httpServerSocket = serverSocket
+            Log.i(TAG, "HTTP_SERVER_SOCKET_OPEN port=$httpPort")
+
+            while (running.get()) {
+                val client = serverSocket.accept()
+                thread(name = "service-http-admin-client") {
+                    handleHttpClient(client)
+                }
+            }
+        } finally {
+            Log.i(TAG, "HTTP_SERVER_SOCKET_CLOSE")
+            httpServerSocket?.close()
+            httpServerSocket = null
         }
     }
 

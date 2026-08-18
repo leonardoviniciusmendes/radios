@@ -7,6 +7,7 @@ export interface RadioDiscovery {
   model: string;
   ip: string;
   httpPort: number;
+  channel?: string;
   lastSeen: string;
   online: boolean;
 }

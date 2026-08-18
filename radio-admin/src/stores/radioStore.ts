@@ -14,8 +14,8 @@ export const useRadioStore = defineStore('radio', () => {
   const onlineRadios = computed(() => radios.value.filter((radio) => radio.status === 'ONLINE'));
   const offlineRadios = computed(() => radios.value.filter((radio) => radio.status === 'OFFLINE'));
   const activeChannels = computed(() => {
-    const usedChannels = new Set(radios.value.map((radio) => radio.channel));
-    return channels.value.filter((channel) => usedChannels.has(channel.name));
+    const usedChannels = new Set(radios.value.map((radio) => normalizeChannel(radio.channel)));
+    return channels.value.filter((channel) => usedChannels.has(normalizeChannel(channel.name)));
   });
 
   const selectedRadio = computed(() => {
@@ -23,7 +23,17 @@ export const useRadioStore = defineStore('radio', () => {
   });
 
   function countRadiosByChannel(channelName: string) {
-    return radios.value.filter((radio) => radio.channel === channelName).length;
+    const normalizedChannel = normalizeChannel(channelName);
+    return radios.value.filter((radio) => normalizeChannel(radio.channel) === normalizedChannel).length;
+  }
+
+  function radiosByChannel(channelName: string) {
+    const normalizedChannel = normalizeChannel(channelName);
+    return radios.value.filter((radio) => normalizeChannel(radio.channel) === normalizedChannel);
+  }
+
+  function normalizeChannel(channelName: string) {
+    return channelName.trim().toLowerCase();
   }
 
   function mergeRadios(nextRadios: RadioDevice[]) {
@@ -133,6 +143,7 @@ export const useRadioStore = defineStore('radio', () => {
     offlineRadios,
     activeChannels,
     countRadiosByChannel,
+    radiosByChannel,
     loadDevices,
     refreshRadios,
     selectRadio,

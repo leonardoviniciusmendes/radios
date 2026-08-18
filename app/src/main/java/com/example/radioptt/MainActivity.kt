@@ -7,12 +7,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.media.AudioFormat
-import android.media.AudioManager
-import android.media.AudioTrack
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Log
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ViewGroup
@@ -32,9 +30,10 @@ import org.json.JSONObject
 class MainActivity : Activity() {
     private val port = 50005
     private val discoveryPort = 50006
-    private val sampleRate = 16_000
     private val onlineTimeoutMs = 6_000L
-    private val receiving = AtomicBoolean(true)
+    private val configPreferences by lazy {
+        getSharedPreferences(CONFIG_PREFS_NAME, Context.MODE_PRIVATE)
+    }
     private val discovering = AtomicBoolean(true)
 
     private lateinit var radiosList: LinearLayout
@@ -44,10 +43,8 @@ class MainActivity : Activity() {
     private lateinit var localModel: String
     private val discoveredRadios = LinkedHashMap<String, RadioDevice>()
     private var selectedDeviceId: String? = null
-    private var rxSocket: DatagramSocket? = null
     private var discoveryRxSocket: DatagramSocket? = null
     private var discoveryTxSocket: DatagramSocket? = null
-    private var audioTrack: AudioTrack? = null
     private var pttBroadcastReceiverRegistered = false
     private val pttBroadcastReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -124,7 +121,6 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1)
         }
 
-        startReceiver()
         startDiscovery()
         configurePttController()
         registerPttBroadcastReceiver()
@@ -136,6 +132,7 @@ class MainActivity : Activity() {
         val model: String,
         val ip: String,
         val audioPort: Int,
+        val channel: String,
         val lastSeen: Long
     )
 
@@ -159,10 +156,14 @@ class MainActivity : Activity() {
         PttController.configure(
             context = this,
             targetIpsProvider = {
-                discoveredRadios.values
+                val currentChannel = normalizeChannel(getCurrentChannel())
+                val targets = discoveredRadios.values
+                    .filter { normalizeChannel(it.channel) == currentChannel }
                     .map { it.ip }
                     .filter { it.isNotBlank() }
                     .distinct()
+                Log.i(TAG, "TX_CHANNEL channel=${getCurrentChannel()} targets=${targets.size}")
+                targets
             },
             callbacks = PttController.Callbacks(
                 onPttDown = {
@@ -190,51 +191,20 @@ class MainActivity : Activity() {
         )
     }
 
+    private fun getCurrentChannel(): String {
+        return configPreferences.getString(CONFIG_CHANNEL, null)?.takeIf { it.isNotBlank() } ?: "Geral"
+    }
+
+    private fun normalizeChannel(channel: String): String {
+        return channel.trim().lowercase()
+    }
+
     private fun startTransmission() {
         PttController.startTransmission()
     }
 
     private fun stopTransmission() {
         PttController.stopTransmission()
-    }
-
-    private fun startReceiver() {
-        thread(name = "udp-audio-rx") {
-            try {
-                val minBuffer = AudioTrack.getMinBufferSize(
-                    sampleRate,
-                    AudioFormat.CHANNEL_OUT_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT
-                )
-                val player = AudioTrack(
-                    AudioManager.STREAM_MUSIC,
-                    sampleRate,
-                    AudioFormat.CHANNEL_OUT_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT,
-                    minBuffer * 4,
-                    AudioTrack.MODE_STREAM
-                )
-                audioTrack = player
-                player.play()
-
-                val socket = DatagramSocket(port)
-                rxSocket = socket
-                val buffer = ByteArray(2048)
-
-                while (receiving.get()) {
-                    val packet = DatagramPacket(buffer, buffer.size)
-                    socket.receive(packet)
-                    player.write(packet.data, packet.offset, packet.length)
-                }
-            } catch (_: Exception) {
-            } finally {
-                rxSocket?.close()
-                rxSocket = null
-                audioTrack?.runCatching { stop() }
-                audioTrack?.release()
-                audioTrack = null
-            }
-        }
     }
 
     private fun startDiscovery() {
@@ -254,6 +224,10 @@ class MainActivity : Activity() {
                 while (discovering.get()) {
                     val payload = JSONObject()
                         .put("deviceId", localDeviceId)
+                        .put("name", localName)
+                        .put("model", localModel)
+                        .put("httpPort", 50080)
+                        .put("channel", getCurrentChannel())
                         .put("nome", localName)
                         .put("modelo", localModel)
                         .put("portaAudio", port)
@@ -305,10 +279,11 @@ class MainActivity : Activity() {
 
             val radio = RadioDevice(
                 deviceId = deviceId,
-                name = json.optString("nome", "Radio"),
-                model = json.optString("modelo", ""),
+                name = json.optString("name", json.optString("nome", "Radio")),
+                model = json.optString("model", json.optString("modelo", "")),
                 ip = packet.address.hostAddress ?: return,
                 audioPort = json.optInt("portaAudio", port),
+                channel = json.optString("channel", "Geral").trim().ifEmpty { "Geral" },
                 lastSeen = System.currentTimeMillis()
             )
             discoveredRadios[deviceId] = radio
@@ -354,10 +329,8 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         discovering.set(false)
-        receiving.set(false)
         PttController.stopTransmission()
         PttController.clearConfiguration()
-        rxSocket?.close()
         discoveryRxSocket?.close()
         discoveryTxSocket?.close()
         if (pttBroadcastReceiverRegistered) {
@@ -383,5 +356,11 @@ class MainActivity : Activity() {
             }
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    companion object {
+        private const val TAG = "RadioPtt"
+        private const val CONFIG_PREFS_NAME = "radio_device_config"
+        private const val CONFIG_CHANNEL = "channel"
     }
 }

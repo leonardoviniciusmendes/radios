@@ -8,6 +8,7 @@ interface RadioDiscovery {
   model: string;
   ip: string;
   httpPort: number;
+  channel: string;
   lastSeen: string;
   lastSeenMs: number;
 }
@@ -48,6 +49,7 @@ udpServer.on('message', (message, rinfo) => {
     const model = getString(payload.model) || getString(payload.modelo) || 'unavailable';
     const ip = getString(payload.ip) || rinfo.address;
     const port = getNumber(payload.httpPort, 50080);
+    const channel = getString(payload.channel) || 'Geral';
 
     radios.set(deviceId, {
       deviceId,
@@ -55,6 +57,7 @@ udpServer.on('message', (message, rinfo) => {
       model,
       ip,
       httpPort: port,
+      channel,
       lastSeen: new Date(now).toISOString(),
       lastSeenMs: now,
     });
@@ -79,6 +82,7 @@ app.get('/api/radios', (_request, response) => {
       model: radio.model,
       ip: radio.ip,
       httpPort: radio.httpPort,
+      channel: radio.channel,
       lastSeen: radio.lastSeen,
       online: now - radio.lastSeenMs <= offlineTimeoutMs,
     })),
