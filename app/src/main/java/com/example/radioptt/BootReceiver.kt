@@ -14,19 +14,12 @@ class BootReceiver : BroadcastReceiver() {
         Log.i(TAG, "BOOT_RECEIVED")
 
         val serviceIntent = Intent(context, RadioForegroundService::class.java)
+        Log.i(TAG, "SERVICE_START_REQUESTED")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.startForegroundService(serviceIntent)
         } else {
             context.startService(serviceIntent)
         }
-
-        val activityIntent = Intent(context, MainActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        }
-        Log.i(TAG, "MAIN_ACTIVITY_START")
-        context.startActivity(activityIntent)
     }
 
     companion object {

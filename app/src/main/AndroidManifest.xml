@@ -26,6 +26,7 @@
 
         <service
             android:name=".RadioForegroundService"
+            android:directBootAware="true"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
