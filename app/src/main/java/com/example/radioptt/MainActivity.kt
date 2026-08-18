@@ -158,8 +158,11 @@ class MainActivity : Activity() {
     private fun configurePttController() {
         PttController.configure(
             context = this,
-            targetIpProvider = {
-                selectedDeviceId?.let { discoveredRadios[it]?.ip }
+            targetIpsProvider = {
+                discoveredRadios.values
+                    .map { it.ip }
+                    .filter { it.isNotBlank() }
+                    .distinct()
             },
             callbacks = PttController.Callbacks(
                 onPttDown = {

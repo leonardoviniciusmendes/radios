@@ -27,7 +27,7 @@ object PttController {
     @Volatile
     private var appContext: Context? = null
     @Volatile
-    private var targetIpProvider: (() -> String?)? = null
+    private var targetIpsProvider: (() -> List<String>)? = null
     @Volatile
     private var callbacks: Callbacks = Callbacks()
 
@@ -42,15 +42,17 @@ object PttController {
         val onError: (String) -> Unit = {}
     )
 
-    fun configure(context: Context, targetIpProvider: () -> String?, callbacks: Callbacks = Callbacks()) {
+    fun configure(context: Context, targetIpsProvider: () -> List<String>, callbacks: Callbacks = Callbacks()) {
         appContext = context.applicationContext
-        this.targetIpProvider = targetIpProvider
+        this.targetIpsProvider = targetIpsProvider
         this.callbacks = callbacks
+        Log.i(TAG, "PTT_CONTROLLER_CONFIGURED")
     }
 
     fun clearConfiguration() {
+        Log.i(TAG, "PTT_CONTROLLER_CLEAR_CONFIGURATION")
         callbacks = Callbacks()
-        targetIpProvider = null
+        targetIpsProvider = null
         appContext = null
     }
 
@@ -61,7 +63,13 @@ object PttController {
             return
         }
 
-        val targetIp = targetIpProvider?.invoke()?.takeIf { it.isNotBlank() } ?: return
+        val targetIps = targetIpsProvider?.invoke()
+            .orEmpty()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+        if (targetIps.isEmpty()) return
+
         synchronized(lock) {
             if (isTransmitting) return
             if (!sending.compareAndSet(false, true)) return
@@ -74,16 +82,22 @@ object PttController {
         callbacks.onTxStart()
 
         thread(name = "udp-audio-tx") {
+            Log.i(TAG, "TX_THREAD_START")
             try {
-                val address = InetAddress.getByName(targetIp)
+                val addresses = targetIps.map { targetIp ->
+                    TargetAddress(targetIp, InetAddress.getByName(targetIp))
+                }
+                Log.d(TAG, "TX_TARGETS count=${addresses.size} ips=${addresses.joinToString(",") { it.ip }}")
                 val socket = DatagramSocket()
                 txSocket = socket
+                Log.i(TAG, "TX_SOCKET_OPEN")
 
                 val minBuffer = AudioRecord.getMinBufferSize(
                     SAMPLE_RATE,
                     AudioFormat.CHANNEL_IN_MONO,
                     AudioFormat.ENCODING_PCM_16BIT
                 )
+                Log.i(TAG, "AUDIO_RECORD_MIN_BUFFER size=$minBuffer")
                 val bufferSize = maxOf(minBuffer, 960)
                 val recorder = AudioRecord(
                     MediaRecorder.AudioSource.MIC,
@@ -95,14 +109,22 @@ object PttController {
                 audioRecord = recorder
 
                 val buffer = ByteArray(960)
+                Log.i(TAG, "AUDIO_RECORD_START_REQUEST")
                 recorder.startRecording()
                 while (sending.get()) {
                     val read = recorder.read(buffer, 0, buffer.size)
                     if (read > 0) {
-                        socket.send(DatagramPacket(buffer, read, address, AUDIO_PORT))
+                        for (address in addresses) {
+                            try {
+                                socket.send(DatagramPacket(buffer, read, address.address, AUDIO_PORT))
+                            } catch (e: Exception) {
+                                Log.e(TAG, "TX_TARGET_ERROR ip=${address.ip} erro=${e.message ?: e.javaClass.simpleName}")
+                            }
+                        }
                     }
                 }
             } catch (e: Exception) {
+                Log.e(TAG, "TX_THREAD_ERROR ${e.message ?: e.javaClass.simpleName}")
                 callbacks.onError(e.message ?: "Erro ao enviar audio")
             } finally {
                 releaseTransmissionResources()
@@ -115,6 +137,7 @@ object PttController {
                     callbacks.onPttUp()
                 }
                 callbacks.onTxStop()
+                Log.i(TAG, "TX_THREAD_STOP")
             }
         }
     }
@@ -139,13 +162,18 @@ object PttController {
             callbacks.onTxStop()
         }
         audioRecord?.runCatching { stop() }
+            ?.onFailure { Log.e(TAG, "AUDIO_RECORD_STOP_ERROR ${it.message ?: it.javaClass.simpleName}") }
+        Log.i(TAG, "TX_SOCKET_CLOSE_REQUEST")
         txSocket?.close()
     }
 
     private fun releaseTransmissionResources() {
         audioRecord?.runCatching { stop() }
+            ?.onFailure { Log.e(TAG, "AUDIO_RECORD_STOP_ERROR ${it.message ?: it.javaClass.simpleName}") }
+        Log.i(TAG, "AUDIO_RECORD_RELEASE")
         audioRecord?.release()
         audioRecord = null
+        Log.i(TAG, "TX_SOCKET_CLOSE")
         txSocket?.close()
         txSocket = null
         sending.set(false)
@@ -155,4 +183,9 @@ object PttController {
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
             context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
     }
+
+    private data class TargetAddress(
+        val ip: String,
+        val address: InetAddress
+    )
 }
