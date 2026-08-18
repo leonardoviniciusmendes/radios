@@ -60,6 +60,8 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        RadioServiceStarter.startFromActivity(this)
+
         localDeviceId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
             ?: "radio-${Build.MODEL}"
         localName = "Radio ${Build.MODEL}"
